@@ -1,0 +1,383 @@
+---
+title: "Machine Learning - Classificação"
+output: 
+  flexdashboard::flex_dashboard:
+    theme: united
+    orientation: rows
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(plotly)
+library(tidyverse)
+library(shiny)
+library(tidymodels)
+dados = read.csv("Cancer_Wisconsin.csv", header = T, sep = ";")
+dados$Ident = NULL
+attach(dados)
+```
+
+```{r, message = FALSE, warning = FALSE}
+dados$classe = factor(dados$classe)
+```
+
+```{r, include = FALSE}
+#Divisão entre treino e teste, pré-processamento e validação cruzada
+set.seed(1234)
+divisao <- initial_split(dados, strata = classe)
+data_treino <- training(divisao) 
+data_teste <- testing(divisao)
+pre_recipe <- recipe(classe ~ ., data = data_treino) %>% 
+  step_impute_median(all_predictors()) 
+val_set <- vfold_cv(data_treino, v = 4, strata = classe)
+```
+
+
+```{r, message = FALSE, warning = FALSE, include = FALSE}
+#Algoritmos
+library(glmnet)
+Log_model <- logistic_reg(penalty = tune(),
+                          mixture = tune()) %>%
+  set_engine("glmnet")
+
+library(kknn)
+knn_model <- nearest_neighbor(neighbors = tune(), 
+                             weight_func = tune()) %>%
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+tree_model <- decision_tree(cost_complexity = tune(), 
+                           min_n = tune()) %>%
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+library(ranger)
+rf_model <- rand_forest(mtry = tune(), min_n = tune(), 
+                        trees = 1000) %>%
+  set_engine("ranger") %>% 
+  set_mode("classification")
+
+library(xgboost)
+xgb_model <- boost_tree(tree_depth = tune(), learn_rate = tune(), 
+                        loss_reduction = tune(), min_n = tune(), 
+                        sample_size = tune(), trees = tune()) %>% 
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+#Fluxo de trabalho
+workflows <-  workflow_set(
+  preproc = list(processing = pre_recipe),
+  models = list(Regression_log = Log_model,
+                knn = knn_model,
+                decision_trees = tree_model,
+                random_forest = rf_model,
+                xgboost = xgb_model)
+)
+
+#Grid de paramêmtros
+grid_control <- control_grid(
+  save_pred = TRUE,
+  parallel_over = "everything",
+  save_workflow = TRUE
+)
+
+#Treinamento dos modelos
+grid_results <- workflows %>% 
+  workflow_map(
+    resamples = val_set,
+    grid = 10,
+    control = grid_control
+  )
+```
+
+
+```{r, include = FALSE}
+#Regressão Logística
+#Obtendo resultados treino
+Reg_train <- grid_results %>%
+  rank_results() %>% 
+  filter(.metric == "roc_auc", model == "logistic_reg") %>% 
+  select(model, .config, roc_auc = mean, std_err, rank)
+
+
+#Salvando o melhor modelo
+best_results_Reg <- grid_results %>%
+  extract_workflow_set_result("processing_Regression_log") %>% 
+  select_best(metric = "roc_auc")
+
+#Aplicando nos dados de teste
+Reg_log_test_results <- grid_results %>% 
+  extract_workflow("processing_Regression_log") %>% 
+  finalize_workflow(best_results_Reg) %>% 
+  last_fit(split = divisao)
+```
+
+
+```{r, include = FALSE}
+#KNN
+#Obtendo resultados treino
+knn_train <- grid_results %>%
+  rank_results() %>% 
+  filter(.metric == "roc_auc", model == "nearest_neighbor") %>% 
+  select(model, .config, roc_auc = mean, std_err, rank)
+
+#Salvando o melhor modelo
+best_results_knn <- grid_results %>% 
+  extract_workflow_set_result("processing_knn") %>% 
+  select_best(metric = "roc_auc")
+
+#Aplicando nos dados de teste
+Knn_test_results <- grid_results %>% 
+  extract_workflow("processing_knn") %>% 
+  finalize_workflow(best_results_knn) %>% 
+  last_fit(split = divisao)
+```
+
+
+```{r, include = FALSE}
+#Decision tree
+#Obtendo resultados treino
+tree_train <- grid_results %>%
+  rank_results() %>% 
+  filter(.metric == "roc_auc", model == "decision_tree") %>% 
+  select(model, .config, roc_auc = mean, std_err, rank)
+
+#Salvando o melhor modelo
+best_results_tree <- grid_results %>% 
+  extract_workflow_set_result("processing_decision_trees") %>% 
+  select_best(metric = "roc_auc")
+
+#Aplicando nos dados de teste
+tree_test_results <- grid_results %>% 
+  extract_workflow("processing_decision_trees") %>% 
+  finalize_workflow(best_results_tree) %>% 
+  last_fit(split = divisao)
+```
+
+
+```{r, include = FALSE}
+#Random Forest
+#Obtendo resultados treino
+rand_train <- grid_results %>%
+  rank_results() %>% 
+  filter(.metric == "roc_auc", model == "rand_forest") %>% 
+  select(model, .config, roc_auc = mean, std_err, rank)
+
+#Salvando o melhor modelo
+best_results_rand <- grid_results %>% 
+  extract_workflow_set_result("processing_random_forest") %>% 
+  select_best(metric = "roc_auc")
+
+#Aplicando nos dados de teste
+rand_test_results <- grid_results %>% 
+  extract_workflow("processing_random_forest") %>% 
+  finalize_workflow(best_results_rand) %>% 
+  last_fit(split = divisao)
+```
+
+```{r, include = FALSE}
+#XGBoost
+#Obtendo resultados treino
+Xgb_train <- grid_results %>%
+  rank_results() %>% 
+  filter(.metric == "roc_auc", model == "boost_tree") %>% 
+  select(model, .config, roc_auc = mean, std_err, rank)
+
+#Salvando o melhor modelo
+best_results_xgb <- grid_results %>% 
+  extract_workflow_set_result("processing_xgboost") %>% 
+  select_best(metric = "roc_auc")
+
+#Aplicando nos dados de teste
+xgb_test_results <- grid_results %>% 
+  extract_workflow("processing_xgboost") %>% 
+  finalize_workflow(best_results_xgb) %>% 
+  last_fit(split = divisao)
+```
+
+
+# Resultados base de treino
+
+## Entrada {.sidebar}
+
+```{r}
+h1("Previsão de Câncer de mama")
+h5("A análise utiliza-se de algoritmos de aprendizado de máquina para prever o diagnóstico do paciente.")
+selectInput("dataset", h4("Selecione o algoritmo"), 
+                 c("Decision tree", "K-Nearest Neighbors (KNN)", "Logistic Regression", "Random Forest", "Xgboost"))
+h5("O gráfico resume o resultado da base de treinamento em função dos valores da AUC, obtido atráves dos modelos gerados para cada algoritmo.")
+h5("Os modelos gerados para cada algoritmo, entre eles os que tiveram melhor e pior desempenho pode ser visualizado alternando as abas e selecionando cada um dos algoritmos.")
+```
+
+
+[GitHub](https://github.com/Fagna)
+
+[LinkedIn](https://br.linkedin.com/in/maria-fagna-8116a8218)
+
+```{r}
+datasetInput1 <- reactive({
+  switch(input$dataset,
+         "Decision tree" = tree_train,
+         "K-Nearest Neighbors (KNN)" = knn_train, 
+         "Logistic Regression" = Reg_train,
+         "Random Forest" = rand_train,
+         "Xgboost" = Xgb_train)
+})
+```
+
+
+Row {data-height=950}
+-------------------------------------
+
+### Desempenho geral dos algoritmos na base de dados de treino
+
+```{r}
+renderPlotly({
+autoplot(grid_results,
+  rank_metric = "roc_auc",
+  metric = "roc_auc",
+  select_best = TRUE)
+})
+```
+
+
+Row {.tabset .tabset-fade}
+-------------------------------------
+
+### Modelos com melhor desempenho
+
+```{r}
+renderTable({
+  datasetInput1() %>% head(5)
+})
+```
+
+
+### Modelos com pior desempenho
+
+```{r}
+renderTable({
+  datasetInput1() %>% tail(5)
+})
+```
+
+
+# Resultados base de teste
+
+## Entrada {.sidebar}
+
+```{r}
+h1("Previsão de Câncer de mama")
+h5("A análise utiliza-se de algoritmos de aprendizado de máquina para prever o diagnóstico do paciente.")
+selectInput("dataset2", h4("Selecione o algoritmo"), 
+                 c("Decision tree", "K-Nearest Neighbors (KNN)", "Logistic Regression", "Random Forest", "Xgboost"))
+h5(strong("Matriz de confusão:"))
+h5("A matriz de confusão retorna os valores reais para cada classe e os valores previstos, podendo assim avaliar o total de erros e acertos dos modelos.")
+h5(strong("Curva ROC:"))
+h5("A Curva ROC ilustra o desempenho geral do modelo onde traça-se um diagrama que representa a sensibilidade (verdadeiro positivo) em função da proporção de falsos positivos (1- Especificidade).")
+h5(strong("AUC da Curva ROC:"))
+h5("A AUC é a área sob a curva ROC e varia de 0 a 1, quanto maior a AUC melhor o modelo.")
+   
+```
+
+
+[GitHub](https://github.com/Fagna)
+
+[LinkedIn](https://br.linkedin.com/in/maria-fagna-8116a8218)
+
+```{r}
+datasetInput <- reactive({
+    switch(input$dataset2,
+           "Decision tree" = tree_test_results,
+           "K-Nearest Neighbors (KNN)" = Knn_test_results, 
+           "Logistic Regression" = Reg_log_test_results,
+           "Random Forest" = rand_test_results,
+           "Xgboost" = xgb_test_results)
+  })
+```
+
+
+
+Row {data-height=650}
+-------------------------------------
+
+### Matriz de Confusão 
+
+```{r}
+renderPlotly({
+  plot(datasetInput() %>%
+    collect_predictions() %>%
+         conf_mat(truth = classe, estimate = .pred_class, 
+                  dnn = c("Previsto", "Real")) %>% 
+         autoplot(type = "heatmap") +
+         scale_fill_gradient(low = "pink3", high = "cyan4"))
+})
+```
+
+
+### Curva Roc
+
+```{r}
+renderPlotly({
+  datasetInput() %>%
+    collect_predictions() %>%
+    roc_curve(classe, .pred_2) %>% 
+    autoplot()
+})
+```
+
+
+Row {data-height=350}
+-------------------------------------
+
+### Métricas de desempenho do modelo
+
+
+```{r}
+renderTable({
+  collect_metrics(datasetInput(), "roc_auc")
+})
+```
+
+# Sobre a base de dados
+
+
+As amostras são de pacientes do Dr.William H.Wolberg do Hospitais da Universidadede Wisconsin, Madison, Wisconsin, EUA. As amostras foram coletadas periodicamente conforme os casos ocorriam. O banco de dados possui um total de 699 observações e 10 variáveis, onde a variável classe é a variável predita, e as demais são as variáveis preditoras.
+
+As variáveis preditoras a seguir assumem valores em uma escala ordinal de 1 a 10. São elas, espessura de aglomerado, uniformidade do tamanho da célula, uniformidade da forma celular, adesão marginal, tamanho de célula epitelial única, núcleos nus, cromatina suave, nucléolos normais, mitoses.
+
+A variável resposta *classe* foi codificada como sendo:\
+
+2: Não Câncer (Tumor benigno);\
+
+4: Câncer (Tumor maligno).
+
+Column {data-height=350}
+-------------------------------------
+
+### Histogramas das variáveis preditoras
+
+```{r}
+par(mfrow=c(3,3))
+for(i in 1:9) {
+  hist(dados[,i], main=names(dados)[i], xlab = "valores observados", col = "pink2")
+}
+```
+
+### Barplot da variável resposta
+
+```{r}
+prop = table(dados$classe)
+barplot(prop,
+      xlab = "Tipo da Classe",
+      ylab = "Frequência absoluta",
+      col = c("pink3", "cyan4"))
+
+```
+
+
+
+
+
